@@ -1,0 +1,101 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Doodle Turf</title>
+<link href="https://fonts.googleapis.com/css2?family=Bagel+Fat+One&family=Bricolage+Grotesque:wght@600;800&display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#8fd9ff;font-family:'Bricolage Grotesque',system-ui,sans-serif;color:#fff;touch-action:none;user-select:none}
+canvas{display:block}
+#land{position:fixed;top:12px;left:14px;font:30px 'Bagel Fat One',sans-serif;text-shadow:0 3px 0 #222,0 0 0 #222;-webkit-text-stroke:1px #222}
+#lb{position:fixed;top:12px;right:14px;text-align:right;font-weight:800;font-size:15px;text-shadow:0 2px 0 #222}
+#menu{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+.card{background:#fff9e6;color:#222;border:4px solid #222;border-radius:28px;box-shadow:0 8px 0 #222;padding:24px 28px;text-align:center;width:min(86vw,320px)}
+h1{font:54px/1 'Bagel Fat One',sans-serif;margin:0 0 6px;color:#ff6b6b;text-shadow:0 4px 0 #222;-webkit-text-stroke:2px #222}
+#msg{min-height:20px;font-weight:800;margin:6px 0 12px}
+input{width:100%;box-sizing:border-box;font:800 18px inherit;padding:12px;border:4px solid #222;border-radius:18px;background:#fff;text-align:center;outline:0;margin-bottom:14px}
+button{font:26px 'Bagel Fat One',sans-serif;width:100%;padding:12px;background:#ffd23f;border:4px solid #222;border-radius:22px;box-shadow:0 6px 0 #222;cursor:pointer}
+button:active{transform:translateY(4px);box-shadow:0 2px 0 #222}
+small{display:block;margin-top:14px;opacity:.7;font-weight:600}
+</style></head><body>
+<div id="land"></div><div id="lb"></div>
+<div id="menu"><div class="card"><h1>Doodle Turf</h1><div id="msg">Grab land. Don't get cut.</div>
+<input id="name" maxlength="12" placeholder="Your name"><button id="play">Play</button>
+<small>Drag or move the mouse to steer<br>or use A / D</small></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const $=id=>document.getElementById(id),socket=io(),esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+let N=64,me=0,ta=0,G=null,dirtyG=0,prev,cells,hue={},pl=new Map();
+// ---- scene ----
+const R=new THREE.WebGLRenderer({antialias:true});R.setPixelRatio(Math.min(devicePixelRatio,2));R.setSize(innerWidth,innerHeight);R.shadowMap.enabled=true;document.body.appendChild(R.domElement);
+const S=new THREE.Scene();S.background=new THREE.Color(0x8fd9ff);S.fog=new THREE.Fog(0x8fd9ff,35,110);
+const cam=new THREE.PerspectiveCamera(50,innerWidth/innerHeight,.1,250),lk=new THREE.Vector3(32,0,32);
+S.add(new THREE.HemisphereLight(0xffffff,0x9ad07a,.95));
+const sun=new THREE.DirectionalLight(0xfff2cc,.8);sun.castShadow=true;sun.shadow.mapSize.set(1024,1024);
+Object.assign(sun.shadow.camera,{left:-18,right:18,top:18,bottom:-18});sun.shadow.camera.updateProjectionMatrix();S.add(sun,sun.target);
+const mat=c=>new THREE.MeshLambertMaterial({color:c}),D=new THREE.Object3D(),col=new THREE.Color(),clouds=[];
+function build(){
+  const n=N*N;prev=new Int32Array(n).fill(-1);
+  cells=new THREE.InstancedMesh(new THREE.BoxGeometry(1,1,1).translate(0,.5,0),new THREE.MeshLambertMaterial(),n);cells.receiveShadow=true;S.add(cells);paint();
+  const sand=new THREE.Mesh(new THREE.BoxGeometry(N+3,3,N+3),mat(0xf3d9a0));sand.position.set(N/2,-1.5,N/2);S.add(sand);
+  const sea=new THREE.Mesh(new THREE.PlaneGeometry(500,500).rotateX(-Math.PI/2),mat(0x4cc3ff));sea.position.set(N/2,-2.2,N/2);S.add(sea);
+  for(let i=0;i<34;i++){const t=new THREE.Group(),s=Math.random()*(N+2)-1,side=i%4,o=Math.random()<.5?-.8:N+.8;
+    const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.15,.2,.8),mat(0x8a5a2b));trunk.position.y=.4;
+    const top=new THREE.Mesh(new THREE.ConeGeometry(.8,1.7,7),mat(0x3fbf6a));top.position.y=1.5;t.add(trunk,top);t.scale.setScalar(.8+Math.random()*.6);
+    t.position.set(side<2?s:o,0,side<2?o:s);S.add(t)}
+  for(let i=0;i<9;i++){const c=new THREE.Group();for(let j=0;j<3;j++){const b=new THREE.Mesh(new THREE.SphereGeometry(2+Math.random()*1.5,12,8),new THREE.MeshBasicMaterial({color:0xffffff}));b.position.set(j*2.4,Math.random(),0);b.scale.y=.6;c.add(b)}
+    c.position.set(Math.random()*N*1.6-N*.3,16+Math.random()*8,Math.random()*N*1.6-N*.3);S.add(c);clouds.push(c)}
+}
+function paint(){ // one InstancedMesh for every tile: grass checker / owned (raised) / trail (lighter, low)
+  if(!cells)return;const n=N*N;
+  for(let i=0;i<n;i++){const v=G?G[i]:0,t=G?G[n+i]:0,k=v|t<<8|((hue[v||t]|0)+1)<<16;if(prev[i]===k)continue;prev[i]=k;
+    let h=.2;if(t){col.setHSL((hue[t]||0)/360,.85,.78);h=.3}else if(v){col.setHSL((hue[v]||0)/360,.7,.55);h=.5}else col.set(((i%N)+((i/N)|0))%2?0xb6f07a:0xa6e46a);
+    D.position.set(i%N+.5,0,((i/N)|0)+.5);D.scale.set(.96,h,.96);D.updateMatrix();cells.setMatrixAt(i,D.matrix);cells.setColorAt(i,col)}
+  cells.instanceMatrix.needsUpdate=true;cells.instanceColor.needsUpdate=true;
+}
+// ---- cartoony player: squishy blob, thick outline, googly eyes, name tag ----
+function mk(name,h){
+  const g=new THREE.Group(),inner=new THREE.Group(),geo=new THREE.SphereGeometry(.5,24,16);
+  const body=new THREE.Mesh(geo,mat(new THREE.Color().setHSL(h/360,.75,.55)));body.scale.set(1,1.1,1);body.castShadow=true;
+  const ol=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({color:0x222233,side:THREE.BackSide}));ol.scale.set(1.08,1.18,1.08);inner.add(body,ol);
+  for(const z of[-.17,.17]){const e=new THREE.Mesh(new THREE.SphereGeometry(.13,12,8),new THREE.MeshBasicMaterial({color:0xffffff})),p=new THREE.Mesh(new THREE.SphereGeometry(.065,8,6),new THREE.MeshBasicMaterial({color:0x111111}));
+    e.position.set(.38,.15,z);p.position.set(.49,.15,z);inner.add(e,p)}
+  const cv=document.createElement('canvas');cv.width=256;cv.height=64;const c=cv.getContext('2d');
+  c.font="40px 'Bagel Fat One',sans-serif";c.textAlign='center';c.lineWidth=8;c.strokeStyle='#222';c.strokeText(name,128,46);c.fillStyle='#fff';c.fillText(name,128,46);
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv),depthTest:false}));sp.scale.set(2.4,.6,1);sp.position.y=1.7;
+  g.add(inner,sp);S.add(g);return{g,inner,name,ph:Math.random()*6}
+}
+// ---- network ----
+socket.on('init',d=>{N=d.N;build()});
+socket.on('g',b=>{G=new Uint8Array(b);dirtyG=1});
+socket.on('me',id=>{me=id;$('menu').style.display='none'});
+socket.on('dead',d=>{me=0;$('msg').textContent=d.by?'Cut by '+d.by+'!':'You cut your own tail!';$('menu').style.display='flex'});
+socket.on('st',s=>{const seen=new Set();
+  for(const[id,name,h,x,y,a,sc]of s.p){seen.add(id);hue[id]=h;let e=pl.get(id);if(e&&e.name!==name){S.remove(e.g);e=null}
+    if(!e){e=mk(name,h);pl.set(id,e)}e.tx=x;e.tz=y;e.ta=a;if(id===me)$('land').textContent=(sc*100/(N*N)).toFixed(1)+'%'}
+  for(const[id,e]of pl)if(!seen.has(id)){S.remove(e.g);pl.delete(id)}
+  $('lb').innerHTML=s.lb.map(([n,p,h],i)=>`<div style="color:hsl(${h},95%,78%)">${i+1}. ${esc(n)} ${p}%</div>`).join('')});
+// ---- input: pointer direction from screen centre, or A/D ----
+const keys={};
+addEventListener('pointermove',e=>{if(me)ta=Math.atan2(e.clientY-innerHeight/2,e.clientX-innerWidth/2)});
+addEventListener('keydown',e=>keys[e.key.toLowerCase()]=1);addEventListener('keyup',e=>delete keys[e.key.toLowerCase()]);
+setInterval(()=>{if(!me)return;ta+=((keys.d||keys.arrowright?1:0)-(keys.a||keys.arrowleft?1:0))*.18;socket.emit('in',ta)},50);
+$('play').onclick=()=>socket.emit('join',$('name').value.trim());
+$('name').onkeydown=e=>{if(e.key=='Enter')$('play').click()};
+addEventListener('resize',()=>{R.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()});
+// ---- loop: smooth toward server state + squash/stretch, bob and lean ----
+let last=performance.now();
+(function loop(now){requestAnimationFrame(loop);const dt=Math.min(.05,(now-last)/1000)||.016,t=now/1000,k=1-Math.exp(-dt*14);last=now;
+  if(dirtyG){paint();dirtyG=0}
+  for(const e of pl.values()){if(e.x===undefined){e.x=e.tx;e.z=e.tz;e.a=e.ta}
+    const ox=e.x,oz=e.z,d=Math.atan2(Math.sin(e.ta-e.a),Math.cos(e.ta-e.a));
+    e.x+=(e.tx-e.x)*k;e.z+=(e.tz-e.z)*k;e.a+=d*k;
+    const v=Math.min(1,Math.hypot(e.x-ox,e.z-oz)/dt/3),sq=1+Math.sin(t*18+e.ph)*.06*v;
+    e.g.position.set(e.x,.55+Math.abs(Math.sin(t*9+e.ph))*.18*v,e.z);e.g.rotation.y=-e.a;
+    e.inner.rotation.x+=(Math.max(-.5,Math.min(.5,-d*.6))-e.inner.rotation.x)*k;e.inner.scale.set(1/sq,sq,1/sq)}
+  for(const c of clouds){c.position.x+=dt*.6;if(c.position.x>N*1.4)c.position.x=-N*.4}
+  const m=me&&pl.get(me);
+  if(m){cam.position.lerp(new THREE.Vector3(m.x,15,m.z+10.5),k*.6);lk.lerp(new THREE.Vector3(m.x,0,m.z-1.5),k*.6)}
+  else{cam.position.set(N/2+Math.cos(t*.1)*N*.55,N*.55,N/2+Math.sin(t*.1)*N*.55);lk.set(N/2,0,N/2)}
+  cam.lookAt(lk);sun.position.set(lk.x+10,25,lk.z+8);sun.target.position.copy(lk);R.render(S,cam)
+})(last);
+</script></body></html>
