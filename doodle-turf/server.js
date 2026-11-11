@@ -25,12 +25,13 @@ function kill(p,by){
   if(!p.alive)return;p.alive=0;p.trail=[];p.terr=[];p.sent=0;io.emit('tc',p.id);dirty.add(p.id);if(by)by.kills++;
   if(p.sock)p.sock.emit('dead',{by:by?by.name:null});else setTimeout(()=>P.has(p.id)&&spawn(p),2500);
 }
+function clean(t){const r=[];for(const p of t){const q=[Math.round(p[0]*1000)/1000,Math.round(p[1]*1000)/1000],l=r[r.length-1];if(!l||l[0]!=q[0]||l[1]!=q[1])r.push(q)}return r}
 function capture(p){ // the trail loop becomes land; whatever was inside (enemy land included) is taken
-  const ring=p.trail;p.trail=[];p.sent=0;io.emit('tc',p.id);if(ring.length<3)return;
+  const ring=clean(p.trail);p.trail=[];p.sent=0;io.emit('tc',p.id);if(ring.length<3)return;
   try{
     const poly=[ring];p.terr=pc.union(p.terr,poly);dirty.add(p.id);
     for(const q of P.values())if(q!==p&&q.alive){q.terr=pc.difference(q.terr,poly);dirty.add(q.id);if(!q.terr.length)kill(q,p)}
-  }catch(e){}
+  }catch(e){console.error('capture failed:',e.message)}
 }
 function step(p){
   // turning has inertia: angular velocity eases toward the wanted turn rate
@@ -42,7 +43,7 @@ function step(p){
   // touching any trail (their head-to-tail path included) cuts it; touching your own tail kills you
   for(const q of P.values()){
     if(!q.alive||!q.trail.length||(q===p&&!p.out))continue;
-    const T=q===p?q.trail:q.trail.concat([[q.x,q.y]]),lim=T.length-1-(q===p?3:0);
+    const T=q===p?q.trail:q.trail.concat([[q.x,q.y]]),lim=T.length-1-(q===p?4:0);
     for(let i=0;i<lim;i++)if(segInt(ox,oy,p.x,p.y,T[i][0],T[i][1],T[i+1][0],T[i+1][1])){if(q===p){kill(p);return}kill(q,p);break}
   }
   if(p.out){
